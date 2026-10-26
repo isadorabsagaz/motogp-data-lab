@@ -1,0 +1,1 @@
+#config.py: configuração por variáveis de ambiente.

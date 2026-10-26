@@ -1,0 +1,1 @@
+#validation.py: verificação da estrutura e dos tipos dos dados.
