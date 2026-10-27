@@ -1,6 +1,7 @@
 from src.motogp_data_lab.storage import MongoStorage
+from src.motogp_data_lab import config
 
-storage = MongoStorage()
+storage = MongoStorage(config.MONGO_URI, config.MONGO_DB)
 
 try:
     storage.ping()

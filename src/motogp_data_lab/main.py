@@ -1,8 +1,9 @@
+from src.motogp_data_lab import config
 from src.motogp_data_lab.ingestion import collect_season
 from src.motogp_data_lab.storage import MongoStorage
 
 def main():
-    storage = MongoStorage()
+    storage = MongoStorage(config.MONGO_URI, config.MONGO_DB)
 
     try:
         storage.ping()

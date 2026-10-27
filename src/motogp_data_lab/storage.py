@@ -1,12 +1,11 @@
 #storage.py: operações com o MongoDB.
-
 from pymongo import MongoClient
 
 class MongoStorage:
     def __init__(
             self,
-            uri: str = "mongodb://localhost:27017",
-            database_name: str = "motogp",
+            uri: str,
+            database_name: str,
     ):
         self.client = MongoClient(
             uri,
