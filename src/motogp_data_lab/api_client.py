@@ -57,3 +57,42 @@ def get_json(path: str, params: dict | None = None):
     except requests.exceptions.RequestException as e:
         logger.error("GET %s failed: %s", url, e)
         raise
+
+def get_seasons() -> list[dict]:
+    return get_json(
+        "results/seasons",
+    )
+
+def get_events(season_id: str, is_finished: bool=True) -> list[dict]:
+    return get_json(
+        "results/events",
+        {"seasonUuid": season_id, "isFinished": str(is_finished).lower()},
+    )
+
+def get_categories(season_id: str) -> list[dict]:
+    return get_json(
+        "results/categories",
+        {"seasonUuid": season_id},
+    )
+
+def get_sessions(event_id: str, category_id: str)  -> list[dict]:
+    return get_json(
+        "results/sessions",
+        {"eventUuid": event_id, "categoryUuid": category_id},
+    )
+
+def get_classification(session_id: str) -> dict:
+    return get_json(
+        f"results/session/{session_id}/classification",
+    )
+
+def get_grid(event_id: str, category_id: str)  -> list[dict]:
+    return get_json(
+        f"results/event/{event_id}/category/{category_id}/grid",
+    )
+
+def get_standings(season_id: str, category_id: str) -> dict:
+    return get_json(
+        "results/standings",
+        {"seasonUuid": season_id, "categoryUuid": category_id},
+    )

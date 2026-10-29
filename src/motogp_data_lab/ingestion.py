@@ -2,7 +2,7 @@
 #EVENT -> SESSION -> CLASSIFICATION
 
 import logging
-from src.motogp_data_lab.api_client import get_json
+from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification
 from src.motogp_data_lab.storage import MongoStorage
 
 logger = logging.getLogger(__name__)
@@ -13,10 +13,7 @@ SEASON_YEAR = 2025
 
 def collect_season(storage: MongoStorage):
     #1. search for events of the season
-    events = get_json(
-        "results/events",
-        {"seasonUuid": SEASON_ID},
-    )
+    events = get_events(season_id=SEASON_ID)
 
     # FILTRO A SER REMOVIDO! APENAS THAILANDIA 2025
     events = [
@@ -38,13 +35,7 @@ def collect_season(storage: MongoStorage):
     for event in events:
         event_id = event["id"]
 
-        sessions = get_json(
-            "results/sessions",
-            {
-                "eventUuid": event_id,
-                "categoryUuid": CATEGORY_ID,
-            },
-        )
+        sessions = get_sessions(event_id=event_id, category_id=CATEGORY_ID)
 
         logger.info("%s: %s sessions", event.get("short_name", event_id), len(sessions))
 
@@ -53,13 +44,7 @@ def collect_season(storage: MongoStorage):
             storage.upsert("sessions", session)
 
             #3. search for classification in each session
-            result = get_json(
-                f"results/session/{session_id}/classification",
-                {
-                    "seasonYear": SEASON_YEAR,
-                    "test": "false",
-                },
-            )
+            result = get_classification(session_id=session_id)
 
             classification = result.get("classification", [])
 
