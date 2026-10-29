@@ -8,6 +8,18 @@ from urllib3.util import Retry
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.motogp.pulselive.com/motogp/v1"
+MIN_REQUEST_INTERVAL = 0.2
+_last_request_time = 0.0
+
+def _throttle():
+    global _last_request_time
+
+    elapsed = time.monotonic() - _last_request_time
+    wait = MIN_REQUEST_INTERVAL - elapsed
+    if wait > 0:
+        time.sleep(wait)
+
+    _last_request_time = time.monotonic()
 
 def _build_session():
     http_session = requests.Session()
@@ -28,6 +40,7 @@ def get_json(path: str, params: dict | None = None):
     url = f"{BASE_URL}/{path.lstrip('/')}"
 
     try:
+        _throttle()
         start = time.perf_counter()
         response = _http_session.get(
             url,
