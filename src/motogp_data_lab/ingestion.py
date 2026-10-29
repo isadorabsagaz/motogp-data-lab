@@ -1,11 +1,11 @@
-#ingestion.py: coordenação da recolha e sequência das chamadas.
-
+#ingestion.py: coordenação da coleta e sequência das chamadas.
 #EVENT -> SESSION -> CLASSIFICATION
 
-import time
-
-from src.motogp_data_lab.api_client import get_json
+import logging
+from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification
 from src.motogp_data_lab.storage import MongoStorage
+
+logger = logging.getLogger(__name__)
 
 SEASON_ID = "ae6c6f0d-c652-44f8-94aa-420fc5b3dab4"
 CATEGORY_ID = "e8c110ad-64aa-4e8e-8a86-f2f152f6a942"
@@ -13,10 +13,7 @@ SEASON_YEAR = 2025
 
 def collect_season(storage: MongoStorage):
     #1. search for events of the season
-    events = get_json(
-        "results/events",
-        {"seasonUuid": SEASON_ID},
-    )
+    events = get_events(season_id=SEASON_ID)
 
     # FILTRO A SER REMOVIDO! APENAS THAILANDIA 2025
     events = [
@@ -26,10 +23,10 @@ def collect_season(storage: MongoStorage):
     ]
 
     if not events:
-        print("No events in THA found")
+        logger.warning("No events in THA found")
         return
 
-    print("quant eventos: ", len(events))
+    logger.info("quant eventos: %s", len(events))
 
     for event in events:
         storage.upsert("events", event)
@@ -38,31 +35,16 @@ def collect_season(storage: MongoStorage):
     for event in events:
         event_id = event["id"]
 
-        sessions = get_json(
-            "results/sessions",
-            {
-                "eventUuid": event_id,
-                "categoryUuid": CATEGORY_ID,
-            },
-        )
+        sessions = get_sessions(event_id=event_id, category_id=CATEGORY_ID)
 
-        print(
-            f'{event.get("short_name", event_id)}: '
-            f"{len(sessions)} sessions "
-        )
+        logger.info("%s: %s sessions", event.get("short_name", event_id), len(sessions))
 
         for session in sessions:
             session_id = session["id"]
             storage.upsert("sessions", session)
 
             #3. search for classification in each session
-            result = get_json(
-                f"results/session/{session_id}/classification",
-                {
-                    "seasonYear": SEASON_YEAR,
-                    "test": "false",
-                },
-            )
+            result = get_classification(session_id=session_id)
 
             classification = result.get("classification", [])
 
@@ -81,12 +63,4 @@ def collect_season(storage: MongoStorage):
 
                 storage.upsert("classification", document)
 
-            print(
-                f' Session {session.get("type")}: '
-                f"{len(classification)} results"
-            )
-
-            #avoid to send to many requests to fast
-            time.sleep(0.2)
-
-        time.sleep(0.2)
+            logger.info("Session %s: %s results", session.get("type"), len(classification))
