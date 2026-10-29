@@ -1,7 +1,11 @@
 #api_client.py: comunicação HTTP e tratamento de erros.
+import logging
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.motogp.pulselive.com/motogp/v1"
 
@@ -23,11 +27,20 @@ _http_session = _build_session()
 def get_json(path: str, params: dict | None = None):
     url = f"{BASE_URL}/{path.lstrip('/')}"
 
-    response = _http_session.get(
-        url,
-        params=params,
-        timeout=20,
-    )
+    try:
+        start = time.perf_counter()
+        response = _http_session.get(
+            url,
+            params=params,
+            timeout=20,
+        )
+        elapsed = time.perf_counter() - start
 
-    response.raise_for_status()
-    return response.json()
+        logger.info("GET %s -> %s (%.2fs)", response.url, response.status_code, elapsed)
+
+        response.raise_for_status()
+        return response.json()
+
+    except requests.exceptions.RequestException as e:
+        logger.error("GET %s failed: %s", url, e)
+        raise
