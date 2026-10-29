@@ -80,32 +80,46 @@ MotoGP PulseLive API
 ```text
 motogp-data-lab/
 ├── docker-compose.yaml
-├── requirements.txt
+├── docker/
+│   └── python.Dockerfile
+├── .env.example
+├── .dockerignore
 ├── .gitignore
+├── requirements.txt
+├── requirements-dev.txt
+├── pytest.ini
 ├── README.md
 ├── src/
 │   ├── __init__.py
 │   └── motogp_data_lab/
 │       ├── __init__.py
+│       ├── config.py
 │       ├── api_client.py
 │       ├── storage.py
 │       ├── ingestion.py
+│       ├── validation.py
 │       └── main.py
 ├── tests/
-├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   └── 02_performance_analysis.ipynb
-└── docs/
-    └── data-model.md
+│   └── test_api_client.py
+├── test_api.py
+├── test_storage.py
+├── notebooks/        (planejado)
+└── docs/             (planejado)
 ```
 
-- `api_client.py`: centraliza as requisições HTTP à API.
+- `docker-compose.yaml`: serviços `mongodb` (com autenticação e healthcheck) e `ingestion`.
+- `docker/python.Dockerfile`: imagem que executa o pipeline de ingestão.
+- `.env.example`: modelo das variáveis de ambiente; o `.env` real fica fora do Git.
+- `config.py`: lê as variáveis de ambiente (`MONGO_URI`, `MONGO_DB`, `LOG_LEVEL`).
+- `api_client.py`: centraliza as requisições HTTP à API, com retry, throttling, logs e uma função por endpoint.
 - `storage.py`: gerencia a conexão e as operações no MongoDB.
 - `ingestion.py`: coordena a coleta de eventos, sessões e classificações.
+- `validation.py`: regras de qualidade dos dados (em desenvolvimento).
 - `main.py`: ponto de entrada para executar o pipeline.
-- `tests/`: testes automatizados para validar comportamentos e dados.
+- `tests/`: testes automatizados com pytest.
+- `test_api.py` e `test_storage.py`: scripts de verificação manual contra a API real e o MongoDB.
 - `notebooks/`: análises exploratórias e experimentos estatísticos.
-- `docs/data-model.md`: documentação das coleções, campos e relacionamentos.
+- `docs/`: documentação do modelo de dados (coleções, campos e relacionamentos).
 
 ## Plano de desenvolvimento
 
@@ -168,7 +182,7 @@ Criar e ativar um ambiente virtual:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 Iniciar o MongoDB:
@@ -184,6 +198,11 @@ Executar o pipeline:
 python -m src.motogp_data_lab.main
 ```
 
+Para executar os testes unitários da API:
+```bash
+pytest -v
+```
+
 Para consultar os logs do MongoDB:
 
 ```bash
@@ -192,14 +211,16 @@ docker compose logs mongodb
 
 ### Dependências Python
 
-O arquivo `requirements.txt` deve incluir, inicialmente:
+As dependências ficam em dois arquivos, todas com versão fixada:
 
-```text
-requests
-pymongo
-```
+| Arquivo | Uso | Conteúdo |
+|---|---|---|
+| `requirements.txt` | Execução do pipeline (inclusive na imagem Docker) | `requests`, `urllib3`, `pymongo`, `python-dotenv` |
+| `requirements-dev.txt` | Desenvolvimento local | Inclui o `requirements.txt` (`-r`) e acrescenta `pytest` |
 
-Adicionar Pandas, Jupyter, bibliotecas de visualização e Scikit-learn quando as respectivas etapas forem iniciadas.
+A imagem Docker instala apenas o `requirements.txt`, então as ferramentas de desenvolvimento não entram nela.
+
+Pandas, Jupyter, bibliotecas de visualização e Scikit-learn serão adicionados quando as respectivas etapas forem iniciadas.
 
 ## Relação com as disciplinas do mestrado
 
