@@ -8,7 +8,7 @@ As informações foram levantadas a partir dos documentos reais do banco (`findO
 
 - **O documento bruto da API é mantido intacto.** A ingestão só acrescenta chaves de relacionamento quando elas não existem no documento original (caso da `classification`). Limpeza, conversão de tipos e achatamento ficam na camada analítica (planejada).
 - **Sem duplicação de dados.** Quando um campo já existe aninhado (por exemplo, `sessions.event.id`), ele é consultado e indexado com dot notation, em vez de ser copiado para o nível de cima.
-- **Idempotência.** Todo documento usa o `id` da API como `_id`, e a gravação é um upsert (`update_one` com `$set` e `upsert=True`). Executar a coleta de novo atualiza os documentos existentes sem criar duplicatas.
+- **Idempotência.** Todo documento usa o `id` da API como `_id`, e a gravação é um upsert (`UpdateOne` com `$set` e `upsert=True`, enviados em lote com `bulk_write`). Executar a coleta de novo atualiza os documentos existentes sem criar duplicatas. Em uma nova execução, `modified_count > 0` indica que a API alterou um dado já coletado: um `$set` com valores idênticos não modifica o documento.
 
 ## Visão geral
 
@@ -117,7 +117,7 @@ Um documento por piloto em cada sessão. Vem da lista `classification` de `GET /
 | `total_laps` | int | Voltas completadas. |
 | `gap` | objeto | Diferenças de tempo como string. O conteúdo varia com o tipo de sessão (ver abaixo). |
 | `rider` | objeto | `{id, full_name, country, legacy_id, riders_id, number, riders_api_uuid}`. |
-| `team` | objeto | `{id, name, legacy_id, season: {id, year, current}}`. |
+| `team` | objeto | `{id, name, legacy_id, season: {id, year, current}}`. O `team.id` não identifica a equipe (ver [Equipe](#equipe-team)). |
 | `constructor` | objeto | `{id, name, legacy_id}`, ex.: `'Ducati'`. |
 
 ### Campos acrescentados pela ingestão
@@ -170,11 +170,34 @@ O subdocumento `rider` traz dois UUIDs diferentes (em todos os 156 documentos):
 
 | Campo | Exemplo (Marc Márquez) | O que é |
 |---|---|---|
-| `rider.id` | `f55b433d-38b8-4d1d-bb3a-a709c82a0260` | ID da Results API. Estabilidade entre temporadas ainda não verificada. |
-| `rider.riders_id` = `rider.riders_api_uuid` | `23e50438-a657-4fb0-a190-3262b5472f29` | ID do piloto na **Broadcast API** (`/riders`, `/teams`). |
+| `rider.id` | `f55b433d-38b8-4d1d-bb3a-a709c82a0260` | ID da Results API. Estável entre temporadas. |
+| `rider.riders_id` = `rider.riders_api_uuid` | `23e50438-a657-4fb0-a190-3262b5472f29` | ID do piloto na **Broadcast API** (`/riders`, `/teams`). Os dois campos sempre têm o mesmo valor. |
 | `rider.legacy_id` | `7444` | ID numérico do sistema antigo; o mesmo nas duas APIs. |
+| `rider.number` | `93` | Número de corrida. **Não serve como identificador:** muda entre temporadas (Bagnaia: 1 em 2024, 63 em 2025; Martín: 89 em 2024, 1 em 2025) e vem `null` em 2004. |
 
-Conferido na API em 29/10/2026: o `/riders` devolve o Márquez com `id: '23e50438...'` e `legacy_id: 7444`, e o `/teams` devolve o Bagnaia com o mesmo `id` em 2024 e em 2025. Por isso, o `riders_api_uuid` é o candidato a chave do piloto na camada analítica: liga a classificação ao perfil e se manteve entre temporadas.
+Conferido na API em 29/10/2026: o `/riders` devolve o Márquez com `id: '23e50438...'` e `legacy_id: 7444`, e o `/teams` devolve o Bagnaia com o mesmo `id` em 2024 e em 2025.
+
+Conferido em 03/11/2026 no `/results/standings` da MotoGP (1 requisição por temporada):
+- **2024 × 2025:** Martín, Bagnaia e Márquez têm o mesmo `rider.id`, o mesmo `riders_api_uuid` e o mesmo `legacy_id` nas duas temporadas.
+- **2004:** os 29 pilotos do campeonato têm `rider.id` e `riders_api_uuid` preenchidos (inclusive pilotos já aposentados, como Rossi), e `riders_id` = `riders_api_uuid` em todos.
+
+**Decisão: a chave do piloto é o `rider.id`.** O `rider_id` acrescentado pela ingestão continua sendo uma cópia dele. Motivos: é nativo da Results API, de onde vêm todos os resultados; é estável entre temporadas; e está presente de 2004 a 2025. O `rider.riders_api_uuid`, que já fica guardado no documento bruto, é usado só para ligar a classificação às coleções `riders` e `teams` da Broadcast API.
+
+### Equipe (`team`)
+
+**O `team.id` da Results API não identifica a equipe.** Ele muda a cada temporada e é diferente para cada piloto da mesma equipe:
+
+| Temporada | Piloto | `team.name` | `team.id` | `team.legacy_id` |
+|---|---|---|---|---|
+| 2024 | Bagnaia | Ducati Lenovo Team | `805737ce...` | 57 |
+| 2025 | Bagnaia | Ducati Lenovo Team | `c069c64a...` | 19 |
+| 2025 | Márquez | Ducati Lenovo Team | `4728a8ee...` | 24 |
+
+O padrão aparece tanto no `/results/standings` quanto na classificação do GP da Tailândia de 2025 que está no banco. A interpretação mais provável é que o `team` represente a **inscrição do piloto na equipe naquela temporada**, e não a equipe.
+
+Consequências:
+- Agrupar por `team.id` separa companheiros de equipe. Por enquanto, a forma de agrupar é `team.name` + ano. Como os nomes mudam com o patrocínio, a análise histórica por equipe vai exigir uma tabela de correspondência.
+- **Em 2004, `team` vem `null`** para os 29 pilotos do standings. Falta conferir se a classificação das sessões antigas também vem sem equipe. O `constructor` (fabricante) está presente em 2004 e é a alternativa para atributos que precisam cobrir as temporadas antigas.
 
 ## Inconsistências entre coleções
 
@@ -195,9 +218,7 @@ Números de velocidade (`top_speed`, `average_speed`) às vezes vêm como `int` 
 
 ## Índices
 
-Situação atual: cada coleção tem apenas o índice padrão em `_id`.
-
-Planejados (Fase 2, em `storage.ensure_indexes()`):
+Além do índice padrão em `_id`, `storage.ensure_indexes()` cria os índices abaixo a cada execução (`create_index` é idempotente). Com eles, o `explain("executionStats")` das consultas passou de `COLLSCAN` para `IXSCAN`.
 
 | Coleção | Índice | Consulta atendida |
 |---|---|---|
@@ -228,9 +249,10 @@ Os metadados `_ingested_at` e `_source_endpoint` previstos para a camada bruta t
 
 | Entidade | Results API | Broadcast API | Como ligar |
 |---|---|---|---|
-| Categoria MotoGP | `e8c110ad-64aa-4e8e-8a86-f2f152f6a942` | `737ab122-76e1-4081-bedb-334caaa18c70` | `legacy_id` (3 nas duas) |
-| Equipe Ducati Lenovo | `4728a8ee-8466-47f5-bb35-529b5c4453ef` (legacy 24) | `892fff2f-7402-4fbd-99fb-5fd567d8a80c` (legacy 15) | Nem o `legacy_id` coincide; a definir |
+| Categoria MotoGP | `e8c110ad-64aa-4e8e-8a86-f2f152f6a942` (o mesmo em 2004, 2024 e 2025) | `737ab122-76e1-4081-bedb-334caaa18c70` | `legacy_id` (3 nas duas) |
+| Equipe Ducati Lenovo | Um `team.id` por piloto e por temporada (2025: `4728a8ee...`/legacy 24 para Márquez, `c069c64a...`/legacy 19 para Bagnaia) | `892fff2f-7402-4fbd-99fb-5fd567d8a80c` (legacy 15, o mesmo em 2024 e 2025) | Nem o `legacy_id` coincide; a definir |
 | Piloto | `rider.id` | `id` = `rider.riders_api_uuid` da classificação | `riders_api_uuid` |
+| Temporada | Um UUID por ano (2004: `6c0e0734...`, 2024: `dd12382e...`, 2025: `ae6c6f0d...`) | — | — |
 | Evento | `id` | — | `toad_api_uuid` do evento aponta para o evento na Broadcast API |
 
 Cuidados com a Broadcast API:
@@ -243,9 +265,10 @@ Cuidados com a Broadcast API:
 
 A confirmar ao coletar outras temporadas e categorias:
 
-- **ID do piloto (parcialmente resolvida):** o `riders_api_uuid` liga a classificação à Broadcast API e se manteve entre 2024 e 2025. Falta conferir se o `rider.id` da Results API muda entre temporadas e decidir qual deles o `rider_id` deve copiar (hoje copia `rider.id`).
-- **ID da equipe:** `team` traz `season` dentro, o que sugere que o `team.id` da Results API pode mudar a cada temporada. Na Broadcast API, a Ducati Lenovo manteve o mesmo `id` em 2024 e 2025. Falta também uma forma de ligar as equipes das duas APIs.
+- **ID do piloto:** resolvida em 03/11/2026 (ver [IDs do piloto](#ids-do-piloto)). A chave é o `rider.id`.
+- **Equipe:** o `team.id` da Results API não identifica a equipe (ver [Equipe](#equipe-team)). Falta definir como identificar uma equipe ao longo dos anos, como ligar as equipes das duas APIs e se a classificação das sessões antigas também vem com `team: null`.
+- **Campos nulos por época no standings:** em 2024, `sprint_wins`, `sprint_podiums` e `sprint_last_positions` vêm `null` para todos os pilotos, apesar de ter havido sprints. Em 2004, `team`, `rider.number`, `race_wins`, `podiums` e `last_positions` vêm `null`. Não usar esses campos como atributo sem conferir a cobertura por temporada.
 - **ID do circuito:** conferir se `circuit.id` é o mesmo em anos diferentes.
-- **Pontos em temporadas antigas:** conferir se `points` também vem antes de 2025.
+- **Pontos em temporadas antigas:** o standings traz `points` em 2004 e 2024 (Rossi, 2004: 304, que confere com o resultado oficial). Falta conferir se a classificação das **sessões** também traz `points` antes de 2025.
 - **Sessões em temporadas antigas e em Moto2/Moto3:** conferir os valores reais de `type` e `number`.
 - **Outros valores de `status`:** até agora só apareceram `INSTND` e `OUTSTND`.
