@@ -96,3 +96,24 @@ def get_standings(season_id: str, category_id: str) -> dict:
         "results/standings",
         {"seasonUuid": season_id, "categoryUuid": category_id},
     )
+
+def get_riders() -> list[dict]:
+    return get_json(
+        "riders"
+    )
+
+def get_rider(rider_id: str) -> dict:
+    return get_json(
+        f"riders/{rider_id}",
+    )
+
+def get_teams(category_id: str, season_year: int) -> list[dict]:
+    """
+    :param category_id: BROADCAST category id, not the Results one
+    :param season_year: season year
+    :return: list of teams, by category and year
+    """
+    return get_json(
+        "teams",
+        {"categoryUuid": category_id, "seasonYear": season_year},
+    )

@@ -64,8 +64,11 @@ def test_http_session_retry_config():
         (api_client.get_classification, {"session_id": "X1"}, ("results/session/X1/classification",)),
         (api_client.get_grid, {"event_id": "E1", "category_id": "C1"}, ("results/event/E1/category/C1/grid",)),
         (api_client.get_standings, {"season_id": "S1", "category_id": "C1"}, ("results/standings", {"seasonUuid": "S1", "categoryUuid": "C1"})),
+        (api_client.get_riders, {}, ("riders",)),
+        (api_client.get_rider, {"rider_id": "R1"}, ("riders/R1",)),
+        (api_client.get_teams, {"category_id": "C1", "season_year": 1111}, ("teams", {"categoryUuid": "C1", "seasonYear": 1111})),
     ],
-    ids=["seasons", "events", "events_not_finished", "categories", "sessions", "classification", "grid", "standings"],
+    ids=["seasons", "events", "events_not_finished", "categories", "sessions", "classification", "grid", "standings", "riders", "rider", "teams"],
 )
 def test_endpoint_calls_get_json(func, kwargs, expected_args):
     with patch.object(api_client, "get_json", return_value="fake") as mock_get_json:
