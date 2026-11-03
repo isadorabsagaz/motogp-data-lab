@@ -28,7 +28,7 @@ def collect_season(storage: MongoStorage):
 
     logger.info("quant eventos: %s", len(events))
 
-    storage.upsert_many("events", events)
+    storage.upsert_many("events", events, "results/events")
 
     #2. search for sessions in each event
     for event in events:
@@ -38,7 +38,7 @@ def collect_season(storage: MongoStorage):
 
         logger.info("%s: %s sessions", event.get("short_name", event_id), len(sessions))
 
-        storage.upsert_many("sessions", sessions)
+        storage.upsert_many("sessions", sessions, "results/sessions")
 
         for session in sessions:
             session_id = session["id"]
@@ -64,7 +64,9 @@ def collect_season(storage: MongoStorage):
 
                 classification_list.append(document)
 
-            write_result = storage.upsert_many("classification", classification_list)
+            write_result = storage.upsert_many(
+                "classification", classification_list, "results/session/{session_id}/classification"
+            )
 
             if write_result is not None:
                 logger.info(

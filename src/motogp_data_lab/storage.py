@@ -1,4 +1,6 @@
 #storage.py: operações com o MongoDB.
+from datetime import datetime, timezone
+
 from pymongo import MongoClient, UpdateOne
 
 class MongoStorage:
@@ -40,17 +42,25 @@ class MongoStorage:
             upsert=True,
         )
 
-    def upsert_many(self, collection_name: str, documents: list):
+    def upsert_many(self, collection_name: str, documents: list, source_endpoint: str):
         if not documents:
             return None
 
         operations = []
+        # Calculado uma vez: todos os documentos desta chamada recebem o mesmo horário.
+        now = datetime.now(timezone.utc)
+
         for doc in documents:
             document_id = doc["id"]
             operations.append(
                 UpdateOne(
                     {"_id": document_id},
-                    {"$set": doc},
+                    {
+                        # Dados da API + endpoint de origem. Valores idênticos não contam como modified.
+                        "$set": {**doc, "_source_endpoint": source_endpoint},
+                        # Só grava na criação; em reexecuções mantém a data original.
+                        "$setOnInsert": {"_ingested_at": now},
+                    },
                     upsert=True
                 )
             )
