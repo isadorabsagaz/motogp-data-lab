@@ -16,6 +16,9 @@ def main():
         storage.ping()
         logger.info("MongoDB connected")
 
+        storage.ensure_indexes()
+        logger.info("MongoDB indexes created")
+
         collect_season(storage)
         logger.info("Season Collection completed")
 
