@@ -28,8 +28,7 @@ def collect_season(storage: MongoStorage):
 
     logger.info("quant eventos: %s", len(events))
 
-    for event in events:
-        storage.upsert("events", event)
+    storage.upsert_many("events", events)
 
     #2. search for sessions in each event
     for event in events:
@@ -39,9 +38,10 @@ def collect_season(storage: MongoStorage):
 
         logger.info("%s: %s sessions", event.get("short_name", event_id), len(sessions))
 
+        storage.upsert_many("sessions", sessions)
+
         for session in sessions:
             session_id = session["id"]
-            storage.upsert("sessions", session)
 
             #3. search for classification in each session
             result = get_classification(session_id=session_id)
@@ -49,6 +49,7 @@ def collect_season(storage: MongoStorage):
             classification = result.get("classification", [])
 
             #4. storage the results
+            classification_list = []
             for item in classification:
                 rider = item.get("rider", {})
 
@@ -61,6 +62,15 @@ def collect_season(storage: MongoStorage):
                     "rider_id": rider.get("id"),
                 }
 
-                storage.upsert("classification", document)
+                classification_list.append(document)
 
-            logger.info("Session %s: %s results", session.get("type"), len(classification))
+            write_result = storage.upsert_many("classification", classification_list)
+
+            if write_result is not None:
+                logger.info(
+                    "Session %s: %s results (upserted=%s, matched=%s, modified=%s)",
+                    session.get("type"), len(classification),
+                    write_result.upserted_count, write_result.matched_count, write_result.modified_count,
+                )
+            else:
+                logger.warning("Session %s (%s) without classification", session.get("type"), session_id)
