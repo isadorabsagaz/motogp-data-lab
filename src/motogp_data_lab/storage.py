@@ -25,5 +25,20 @@ class MongoStorage:
             upsert=True,
         )
 
+    def ensure_indexes(self):
+        # create_index é idempotente: se o índice já existe igual, não faz nada.
+        # O _id já tem índice automático, por isso não aparece aqui.
+
+        # Sessões de um evento (referência aninhada, dot notation)
+        self.db["sessions"].create_index("event.id")
+
+        # Classificação de uma sessão
+        self.db["classification"].create_index("session_id")
+
+        # Histórico de um piloto (também atende consultas só por rider_id)
+        self.db["classification"].create_index(
+            [("rider_id", 1), ("season_year", 1)],
+        )
+
     def close(self):
         self.client.close()
