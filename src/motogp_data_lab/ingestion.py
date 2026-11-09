@@ -2,28 +2,52 @@
 #EVENT -> SESSION -> CLASSIFICATION
 
 import logging
-from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification
+from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification, get_seasons, get_categories
 from src.motogp_data_lab.storage import MongoStorage
 
 logger = logging.getLogger(__name__)
 
-SEASON_ID = "ae6c6f0d-c652-44f8-94aa-420fc5b3dab4"
-CATEGORY_ID = "e8c110ad-64aa-4e8e-8a86-f2f152f6a942"
-SEASON_YEAR = 2025
+def resolve_season_id(year: int) -> str:
+    seasons = get_seasons()
+    for season in seasons:
+        if season["year"] == year:
+            return season["id"]
 
-def collect_season(storage: MongoStorage):
+    raise ValueError(f"Season {year} not found / does not exist")
+
+def resolve_category_id(season_id: str, name: str) -> str:
+    categories = get_categories(season_id)
+    name = name.replace("™", "").lower()
+
+    for category in categories:
+        category_name = category["name"].replace("™", "").lower()
+        if category_name == name:
+            return category["id"]
+
+    raise ValueError(f"Category {name} not found / does not exist")
+
+def collect_season(storage: MongoStorage, season_year: int, category_name: str, event_short: str | None = None):
     #1. search for events of the season
-    events = get_events(season_id=SEASON_ID)
+    season_id = resolve_season_id(season_year)
+    category_id = resolve_category_id(season_id, category_name)
+    events = get_events(season_id)
 
-    # FILTRO A SER REMOVIDO! APENAS THAILANDIA 2025
+    # FILTER FOR SHORT_NAME AND IGNORE TESTS
     events = [
         event
         for event in events
-        if event.get("short_name") == "THA"
-    ]
+            if not event.get("test")
+        ]
+
+    if event_short is not None:
+        events = [
+            event
+            for event in events
+                if event.get("short_name") == event_short
+        ]
 
     if not events:
-        logger.warning("No events in THA found")
+        logger.warning("No events found (season=%s, event=%s)", season_year, event_short)
         return
 
     logger.info("quant eventos: %s", len(events))
@@ -34,7 +58,7 @@ def collect_season(storage: MongoStorage):
     for event in events:
         event_id = event["id"]
 
-        sessions = get_sessions(event_id=event_id, category_id=CATEGORY_ID)
+        sessions = get_sessions(event_id=event_id, category_id=category_id)
 
         logger.info("%s: %s sessions", event.get("short_name", event_id), len(sessions))
 
@@ -57,8 +81,8 @@ def collect_season(storage: MongoStorage):
                     **item,
                     "session_id": session_id,
                     "event_id": event_id,
-                    "season_year": SEASON_YEAR,
-                    "category_id": CATEGORY_ID,
+                    "season_year": season_year,
+                    "category_id": category_id,
                     "rider_id": rider.get("id"),
                 }
 
