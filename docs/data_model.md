@@ -6,7 +6,7 @@ As informações foram levantadas a partir dos documentos reais do banco (`findO
 
 ## Princípios
 
-- **O documento bruto da API é mantido intacto.** A ingestão só acrescenta chaves de relacionamento quando elas não existem no documento original (caso da `classification`). Limpeza, conversão de tipos e achatamento ficam na camada analítica (planejada).
+- **O documento bruto da API é mantido intacto.** A ingestão só acrescenta os [metadados de ingestão](#metadados-de-ingestão) e, quando não existem no documento original, chaves de relacionamento (caso da `classification`). Limpeza, conversão de tipos e achatamento ficam na camada analítica (planejada).
 - **Sem duplicação de dados.** Quando um campo já existe aninhado (por exemplo, `sessions.event.id`), ele é consultado e indexado com dot notation, em vez de ser copiado para o nível de cima.
 - **Idempotência.** Todo documento usa o `id` da API como `_id`, e a gravação é um upsert (`UpdateOne` com `$set` e `upsert=True`, enviados em lote com `bulk_write`). Executar a coleta de novo atualiza os documentos existentes sem criar duplicatas. Em uma nova execução, `modified_count > 0` indica que a API alterou um dado já coletado: um `$set` com valores idênticos não modifica o documento.
 
@@ -36,6 +36,33 @@ classification  (1 por piloto × sessão)
 O relacionamento é por **referência**, e não por embedding: são relações 1:N que crescem a cada evento, consultadas de forma independente, e a API já fornece os IDs.
 
 A categoria é uma dimensão à parte. O **evento não tem categoria**: o mesmo GP vale para MotoGP, Moto2 e Moto3. A categoria aparece a partir das sessões (`sessions.category.id`).
+
+## Metadados de ingestão
+
+Todo documento das coleções brutas (`events`, `sessions`, `classification`) recebe dois campos gravados pelo `storage.upsert_many()`. O prefixo `_` os separa dos campos da API.
+
+| Campo | Tipo | Operador | Descrição |
+|---|---|---|---|
+| `_ingested_at` | `Date` (UTC) | `$setOnInsert` | Quando o documento foi **criado** no banco. É calculado uma vez por chamada de `upsert_many`, então todos os documentos de um mesmo lote (por exemplo, a classificação de uma sessão) têm o mesmo valor. |
+| `_source_endpoint` | string | `$set` | Endpoint da API que originou o documento. |
+
+Valores de `_source_endpoint`:
+
+| Coleção | Valor |
+|---|---|
+| `events` | `results/events` |
+| `sessions` | `results/sessions` |
+| `classification` | `results/session/{session_id}/classification` |
+
+O valor da `classification` é o **modelo** do caminho, com `{session_id}` literal: o ID da sessão específica já está no campo `session_id` do documento.
+
+Por que dois operadores diferentes:
+- O `_ingested_at` fica no `$setOnInsert` para ser gravado só na criação. Se estivesse no `$set`, mudaria a cada execução, e o `modified_count` passaria a contar todos os documentos, perdendo o sinal de "a API alterou o dado".
+- O `_source_endpoint` pode ficar no `$set` porque o valor é constante para a coleção: em reexecuções ele é idêntico ao gravado e não conta como modificação.
+
+Verificado em 03/11/2026, depois de apagar o banco e rodar a coleta duas vezes: 1 evento, 8 sessões e 156 classificações, todos com os dois campos; o `_ingested_at` manteve o horário da primeira execução.
+
+Limitação: os metadados dizem quando o documento **entrou** no banco, mas não quando foi **alterado** pela última vez.
 
 ## Coleção `events`
 
@@ -240,8 +267,6 @@ Ainda não implementadas; descritas no plano de ação.
 | `teams` | Bruta (dimensão) | Equipes e elencos por temporada e categoria (Broadcast API, `/teams?categoryUuid=&seasonYear=`) |
 | `results` | Analítica | Uma linha por piloto × sessão, com campos achatados e tipados (tempos em segundos, datas como `Date`) |
 | `ingestion_runs` | Controle | Início, fim, status, contagens e erros de cada execução |
-
-Os metadados `_ingested_at` e `_source_endpoint` previstos para a camada bruta também ainda não são gravados.
 
 ### Results API × Broadcast API
 
