@@ -138,6 +138,11 @@ def make_storage(already_collected=(), rider_uuids=()):
     """
     storage = MagicMock()
     storage.has_classification.side_effect = lambda session_id: session_id in already_collected
+    # upsert_many falso: lista vazia -> None (como o real); senão, todos "upserted" (banco vazio).
+    storage.upsert_many.side_effect = lambda collection, documents, source_endpoint: (
+        None if not documents
+        else MagicMock(upserted_count=len(documents), matched_count=0, modified_count=0)
+    )
     storage.distinct_rider_uuids.return_value = list(rider_uuids)
     return storage
 
@@ -423,3 +428,56 @@ def test_collect_season_no_riders_does_not_call_api(fake_api):
     ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
 
     fake_api["rider"].assert_not_called()
+
+
+# ---------- contagens devolvidas (stats para o ingestion_runs) ----------
+
+def test_collect_season_no_events_returns_empty_stats(fake_api):
+    # O return antecipado também devolve o dict, não None: o main grava o stats no run.
+    stats = ingestion.collect_season(make_storage(), season_year=2025, category_name="MotoGP", event_short="XXX")
+
+    assert stats == ingestion._empty_stats()
+
+
+def test_collect_season_stats_has_same_shape_always(fake_api):
+    stats = ingestion.collect_season(make_storage(), season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert set(stats) == set(ingestion.COLLECTIONS) | {"sessions_skipped"}
+    for collection in ingestion.COLLECTIONS:
+        assert set(stats[collection]) == {"received", "upserted", "matched", "modified"}
+
+
+def test_collect_season_stats_sums_across_loop_iterations(fake_api):
+    # 2 eventos (THA, ARG) x 2 sessões x 3 pilotos: os laços precisam somar, não sobrescrever.
+    fake_api["sessions"].return_value = TWO_SESSIONS
+    fake_api["classification"].return_value = {"classification": [
+        {"id": f"CL-{i}", "rider": {"id": f"R{i}"}} for i in range(3)
+    ]}
+    fake_api["grid"].return_value = [{"rider": {"id": "R1"}}]
+
+    stats = ingestion.collect_season(make_storage(), season_year=2025, category_name="MotoGP")
+
+    assert stats["events"]["received"] == 2
+    assert stats["sessions"]["received"] == 4
+    assert stats["classification"]["received"] == 12
+    assert stats["classification"]["upserted"] == 12
+    assert stats["grid"]["received"] == 2
+    assert stats["sessions_skipped"] == 0
+
+
+def test_collect_season_stats_counts_skipped_sessions(fake_api):
+    storage = make_storage(already_collected={"SES-FP1", "SES-RAC"})
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    stats = ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert stats["sessions_skipped"] == 2
+    assert stats["classification"]["received"] == 0
+
+
+def test_collect_season_stats_empty_upsert_counts_received_only(fake_api, caplog):
+    # Standings vazio: upsert_many devolve None -> received=0 e warning, sem quebrar.
+    stats = ingestion.collect_season(make_storage(), season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert stats["standings"] == {"received": 0, "upserted": 0, "matched": 0, "modified": 0}
+    assert "standings 2025: no results" in caplog.text

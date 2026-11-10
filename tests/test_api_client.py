@@ -76,3 +76,60 @@ def test_endpoint_calls_get_json(func, kwargs, expected_args):
 
     mock_get_json.assert_called_once_with(*expected_args)
     assert result == "fake"
+
+
+# ---------- contadores (get_stats / reset_stats) ----------
+
+@pytest.fixture
+def clean_stats():
+    # _stats é global no módulo: outros testes que chamam get_json também somam.
+    api_client.reset_stats()
+    yield
+    api_client.reset_stats()
+
+
+def test_stats_counts_successful_request(clean_stats):
+    fake_response = MagicMock()
+    fake_response.json.return_value = []
+
+    with patch.object(api_client._http_session, "get", return_value=fake_response):
+        api_client.get_json("results/seasons")
+        api_client.get_json("results/seasons")
+
+    assert api_client.get_stats() == {"requests": 2, "failed_requests": 0}
+
+
+def test_stats_counts_failure_in_total_too(clean_stats):
+    fake_response = MagicMock()
+    fake_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404")
+
+    with patch.object(api_client._http_session, "get", return_value=fake_response):
+        with pytest.raises(requests.exceptions.HTTPError):
+            api_client.get_json("results/seasons")
+
+    # requests = total de chamadas; failed_requests é um subconjunto dele.
+    assert api_client.get_stats() == {"requests": 1, "failed_requests": 1}
+
+
+def test_stats_counts_timeout_as_failure(clean_stats):
+    with patch.object(api_client._http_session, "get", side_effect=requests.exceptions.Timeout("timeout")):
+        with pytest.raises(requests.exceptions.Timeout):
+            api_client.get_json("results/seasons")
+
+    assert api_client.get_stats() == {"requests": 1, "failed_requests": 1}
+
+
+def test_reset_stats_zeroes_counters(clean_stats):
+    with patch.object(api_client._http_session, "get", return_value=MagicMock()):
+        api_client.get_json("results/seasons")
+
+    api_client.reset_stats()
+
+    assert api_client.get_stats() == {"requests": 0, "failed_requests": 0}
+
+
+def test_get_stats_returns_copy(clean_stats):
+    snapshot = api_client.get_stats()
+    snapshot["requests"] = 999
+
+    assert api_client.get_stats()["requests"] == 0

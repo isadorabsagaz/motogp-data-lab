@@ -1,6 +1,7 @@
 #storage.py: operações com o MongoDB.
 from datetime import datetime, timezone
 
+from bson import ObjectId
 from pymongo import MongoClient, UpdateOne
 
 class MongoStorage:
@@ -17,6 +18,29 @@ class MongoStorage:
 
     def ping(self):
         self.client.admin.command('ping')
+
+    def start_run(self, args: dict) -> tuple[ObjectId, datetime]:
+        document = {
+            "status": "running",
+            "args": args,
+            "started_at": datetime.now(timezone.utc),
+        }
+        run = self.db["ingestion_runs"].insert_one(document)
+        return run.inserted_id, document["started_at"]
+
+    def finish_run(self, run_id: ObjectId, status: str, started_at: datetime, stats: dict, error: str | None = None):
+        finished_at = datetime.now(timezone.utc)
+        duration_s = (finished_at - started_at).total_seconds()
+        self.db["ingestion_runs"].update_one(
+            {"_id": run_id},
+            {"$set": {
+                "status": status,
+                "finished_at": finished_at,
+                "duration_s": duration_s,
+                "stats": stats,
+                "error": error,
+            }}
+        )
 
     def ensure_indexes(self):
         # create_index é idempotente: se o índice já existe igual, não faz nada.

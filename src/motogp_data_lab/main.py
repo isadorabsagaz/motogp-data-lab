@@ -1,6 +1,7 @@
 import logging
 import argparse
 from src.motogp_data_lab import config
+from src.motogp_data_lab.api_client import get_stats, reset_stats
 from src.motogp_data_lab.ingestion import collect_season
 from src.motogp_data_lab.storage import MongoStorage
 
@@ -32,12 +33,27 @@ def main():
         storage.ensure_indexes()
         logger.info("MongoDB indexes created")
 
-        collect_season(storage=storage, season_year=args.season, category_name=args.category, event_short=args.event, force=args.force)
-        logger.info("Season Collection completed")
+        # Só abre o run depois do ping: sem Mongo não há onde gravá-lo.
+        reset_stats()
+        run_id, started_at = storage.start_run(vars(args))
+        logger.info("Run %s started", run_id)
 
-    except Exception:
-        logger.exception("Pipeline failed")
-        raise
+        try:
+            stats = collect_season(storage=storage, season_year=args.season, category_name=args.category, event_short=args.event, force=args.force)
+            stats["api"] = get_stats()
+
+            storage.finish_run(run_id=run_id, status="success", started_at=started_at, stats=stats)
+            logger.info("Season Collection completed (run %s, %s requests)", run_id, stats["api"]["requests"])
+
+        except Exception as ex:
+            # Loga antes do finish_run: se o finish_run também falhar, o erro original já ficou registrado.
+            logger.exception("Pipeline failed")
+            # collect_season não chegou a devolver as contagens; as da API existem mesmo assim.
+            storage.finish_run(
+                run_id=run_id, status="failed", started_at=started_at,
+                stats={"api": get_stats()}, error=f"{type(ex).__name__}: {ex}",
+            )
+            raise
 
     finally:
         storage.close()
