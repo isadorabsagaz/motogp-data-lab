@@ -8,13 +8,17 @@ As informações foram levantadas a partir dos documentos reais do banco (`findO
 
 - **O documento bruto da API é mantido intacto.** A ingestão só acrescenta os [metadados de ingestão](#metadados-de-ingestão) e, quando não existem no documento original, chaves de relacionamento (caso da `classification`). Limpeza, conversão de tipos e achatamento ficam na camada analítica (planejada).
 - **Sem duplicação de dados.** Quando um campo já existe aninhado (por exemplo, `sessions.event.id`), ele é consultado e indexado com dot notation, em vez de ser copiado para o nível de cima.
-- **Idempotência.** Todo documento usa o `id` da API como `_id`, e a gravação é um upsert (`UpdateOne` com `$set` e `upsert=True`, enviados em lote com `bulk_write`). Executar a coleta de novo atualiza os documentos existentes sem criar duplicatas. Em uma nova execução, `modified_count > 0` indica que a API alterou um dado já coletado: um `$set` com valores idênticos não modifica o documento.
+- **Idempotência.** Todo documento usa o `id` da API como `_id` (a exceção é o `grid`, que não tem `id` na API e recebe uma [chave composta](#chave-composta)), e a gravação é um upsert (`UpdateOne` com `$set` e `upsert=True`, enviados em lote com `bulk_write`). Executar a coleta de novo atualiza os documentos existentes sem criar duplicatas. Em uma nova execução, `modified_count > 0` indica que a API alterou um dado já coletado: um `$set` com valores idênticos não modifica o documento.
 
 ## Visão geral
 
 ```text
 events  (1 por GP; vale para todas as categorias)
   │  _id = id do evento
+  │
+  ├── 1:N   grid.event_id
+  │         grid  (1 por piloto × evento × categoria)
+  │            _id = "event_id:category_id:rider_id"
   │
   │ 1:N   sessions.event.id
   ▼
@@ -25,6 +29,9 @@ sessions  (1 por sessão × categoria)
   ▼
 classification  (1 por piloto × sessão)
      _id = id do item de classificação
+
+standings  (1 por piloto × temporada × categoria; fora da hierarquia de eventos)
+     _id = id do item do standings
 ```
 
 | Coleção | Chave | Referência ao nível de cima | Origem da referência |
@@ -32,6 +39,8 @@ classification  (1 por piloto × sessão)
 | `events` | `_id` = `id` | — | — |
 | `sessions` | `_id` = `id` | `event.id` (aninhado) | API |
 | `classification` | `_id` = `id` | `session_id` (e também `event_id`) | Acrescentada pela ingestão |
+| `grid` | `_id` = `id` **gerado pela ingestão** | `event_id` | Acrescentada pela ingestão |
+| `standings` | `_id` = `id` | `season_year` + `category_id` | Acrescentada pela ingestão |
 
 O relacionamento é por **referência**, e não por embedding: são relações 1:N que crescem a cada evento, consultadas de forma independente, e a API já fornece os IDs.
 
@@ -39,7 +48,7 @@ A categoria é uma dimensão à parte. O **evento não tem categoria**: o mesmo 
 
 ## Metadados de ingestão
 
-Todo documento das coleções brutas (`events`, `sessions`, `classification`) recebe dois campos gravados pelo `storage.upsert_many()`. O prefixo `_` os separa dos campos da API.
+Todo documento das coleções brutas (`events`, `sessions`, `classification`, `grid`, `standings`) recebe dois campos gravados pelo `storage.upsert_many()`. O prefixo `_` os separa dos campos da API.
 
 | Campo | Tipo | Operador | Descrição |
 |---|---|---|---|
@@ -53,8 +62,10 @@ Valores de `_source_endpoint`:
 | `events` | `results/events` |
 | `sessions` | `results/sessions` |
 | `classification` | `results/session/{session_id}/classification` |
+| `grid` | `results/event/{event_id}/category/{category_id}/grid` |
+| `standings` | `results/standings` |
 
-O valor da `classification` é o **modelo** do caminho, com `{session_id}` literal: o ID da sessão específica já está no campo `session_id` do documento.
+Os valores da `classification` e do `grid` são o **modelo** do caminho, com os IDs entre chaves literais: os IDs específicos já estão nos campos `session_id`, `event_id` e `category_id` do documento.
 
 Por que dois operadores diferentes:
 - O `_ingested_at` fica no `$setOnInsert` para ser gravado só na criação. Se estivesse no `$set`, mudaria a cada execução, e o `modified_count` passaria a contar todos os documentos, perdendo o sinal de "a API alterou o dado".
@@ -153,11 +164,11 @@ Um documento por piloto em cada sessão. Vem da lista `classification` de `GET /
 |---|---|---|
 | `session_id` | string | `id` da sessão consultada. |
 | `event_id` | string | `id` do evento da sessão. |
-| `season_year` | int | Constante `SEASON_YEAR` do `ingestion.py`. |
-| `category_id` | string | Constante `CATEGORY_ID` do `ingestion.py`. |
+| `season_year` | int | Ano passado na linha de comando (`--season`). |
+| `category_id` | string | UUID da categoria resolvido a partir de `--category` (`resolve_category_id`). |
 | `rider_id` | string | Cópia de `rider.id` (ver [IDs do piloto](#ids-do-piloto)). |
 
-`season_year` e `category_id` vêm de **constantes do código**, não da resposta da API. Quando a coleta for parametrizada (Fase 3), eles devem vir da temporada e da categoria efetivamente consultadas.
+`season_year` e `category_id` vêm da **temporada e da categoria consultadas**, não da resposta da API. O mesmo vale para o `grid` e o `standings`.
 
 ### Dois formatos de documento
 
@@ -226,13 +237,87 @@ Consequências:
 - Agrupar por `team.id` separa companheiros de equipe. Por enquanto, a forma de agrupar é `team.name` + ano. Como os nomes mudam com o patrocínio, a análise histórica por equipe vai exigir uma tabela de correspondência.
 - **Em 2004, `team` vem `null`** para os 29 pilotos do standings. Falta conferir se a classificação das sessões antigas também vem sem equipe. O `constructor` (fabricante) está presente em 2004 e é a alternativa para atributos que precisam cobrir as temporadas antigas.
 
+## Coleção `grid`
+
+Um documento por piloto no grid de largada de um evento, em uma categoria. Vem de `GET /results/event/{event_id}/category/{category_id}/grid`, que devolve uma **lista** (sem `dict` em volta). A coleta faz uma requisição por evento.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `qualifying_position` | int | Posição no grid (1 a N, sem lacunas). |
+| `qualifying_time` | string | Melhor tempo na qualificação, ex.: `'01:28.782'`. |
+| `rider` | objeto | `{id, full_name, country, legacy_id, riders_id, riders_api_uuid}`. Ao contrário da classificação, **não traz `number`**. |
+| `team_name` | string | Só o **nome** da equipe, sem objeto `team` e sem `constructor`. |
+| `category` | objeto | `{id, name, legacy_id}`. |
+| `event` | objeto | Cópia do evento: `{id, name, sponsored_name, short_name, test, season, circuit, country}`. Como em `sessions`, `event.season` é **string** (`'2025'`). |
+
+### Chave composta
+
+**O item do grid não tem `id` na API.** Como o `upsert_many` usa o `id` como `_id`, a ingestão gera um:
+
+```text
+id = "{event_id}:{category_id}:{rider_id}"
+```
+
+Um piloto aparece uma única vez no grid de um evento em uma categoria, então a combinação é única (conferido: 22 pilotos distintos em 22 itens na Tailândia 2025). Incluir o `category_id` evita colisão quando Moto2 e Moto3 forem coletadas, já que o evento é compartilhado entre as categorias.
+
+Esse `id` **não é um identificador da API** e não deve ser usado para consultar a API.
+
+### Campos acrescentados pela ingestão
+
+| Campo | Tipo | Origem |
+|---|---|---|
+| `id` (e `_id`) | string | Chave composta (acima). |
+| `event_id` | string | `id` do evento consultado (repete `event.id`, mas fica no nível de cima por ser parte da chave). |
+| `season_year` | int | Temporada consultada. |
+| `category_id` | string | Categoria consultada (repete `category.id`). |
+| `rider_id` | string | Cópia de `rider.id`. |
+
+### Observações
+
+- O grid é do **evento**, não de uma sessão: não tem `session_id`. Ele é coletado mesmo quando a retomada pula todas as sessões do evento.
+- MotoGP 2025: 485 documentos em 22 eventos, de 20 a 24 pilotos por evento (substitutos e wildcards). Em todos os eventos, a maior `qualifying_position` é igual ao número de pilotos.
+- **O grid não garante que o piloto largou.** Em 2025, há 10 casos de piloto × evento que estão no grid mas não aparecem na classificação da `RAC` daquele evento (provavelmente pilotos que não largaram). O inverso não acontece. Na análise "grid × chegada", esses pilotos precisam ser tratados à parte.
+- O nome do campo é `qualifying_position`. Falta conferir se ele já inclui punições de grid (largar algumas posições atrás) ou se é a posição bruta da qualificação.
+
+## Coleção `standings`
+
+Um documento por piloto na classificação do campeonato de uma temporada e categoria. Vem da lista `classification` de `GET /results/standings?seasonUuid={season_id}&categoryUuid={category_id}`, que devolve um `dict` `{file, classification, xmlFile}` (`file` e `xmlFile` são links para PDF/XML e são descartados). A coleta faz **uma requisição por execução**, fora do laço de eventos, mesmo com `--event`.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `_id`, `id` | string (UUID) | Identificador do item. Veio igual em duas chamadas seguidas. |
+| `position` | int | Posição no campeonato. |
+| `points` | int | Pontos acumulados (Sprint + corrida). |
+| `rider` | objeto | `{id, full_name, country, legacy_id, riders_id, number, riders_api_uuid}`. |
+| `team` | objeto | `{id, name, legacy_id, season}`. Mesmo problema do `team.id` da classificação (ver [Equipe](#equipe-team)). |
+| `constructor` | objeto | `{id, name, legacy_id}`. |
+| `session` | string | Sempre `'RAC'` em 2025. |
+| `race_wins`, `podiums` | int | Vitórias e pódios em corridas. |
+| `sprint_wins`, `sprint_podiums` | int | Vitórias e pódios em Sprints (`null` em 2024, ver [Pendências](#pendências)). |
+| `last_positions`, `sprint_last_positions` | objeto | Posições nos últimos eventos, por sigla (ex.: `{VAL, POR, MAL}`). Vieram todas `null` em 2025. |
+| `position_change` | int ou null | Variação de posição em relação à rodada anterior. |
+
+Campos acrescentados pela ingestão: `season_year`, `category_id` e `rider_id` (cópia de `rider.id`). Não há `event_id` nem `session_id`: o standings é da temporada.
+
+### É um retrato, não um histórico
+
+A API devolve só a classificação **no momento da consulta**, e o upsert sobrescreve o documento a cada execução. Por isso:
+- Numa temporada finalizada, o standings é o resultado final e não muda mais.
+- Numa temporada em andamento, cada execução substitui os valores anteriores. **A evolução rodada a rodada não fica guardada.** Se for necessária, ela pode ser reconstruída somando os `points` da `classification` até cada evento.
+- `last_positions` e `position_change` dependem do momento da consulta e **não devem ser usados como atributo** de previsão (vazamento).
+
+### Conferência com a classificação
+
+Em 10/11/2026, na MotoGP 2025: para os 29 pilotos do standings, o `points` é **exatamente igual** à soma dos `points` da `classification` (`SPR` + `RAC`) do mesmo `rider_id`. Marc Márquez 545, Álex Márquez 467, Bezzecchi 353.
+
 ## Inconsistências entre coleções
 
-| Dado | `events` | `sessions` | `classification` |
-|---|---|---|---|
-| Ano da temporada | `season.year`: int `2025` | `event.season`: **string** `'2025'` | `season_year`: int `2025`; `team.season.year`: int |
-| Circuito | `circuit`: objeto | `circuit`: string (nome); `event.circuit`: objeto | — |
-| Datas | `date_start`/`date_end`: string `'AAAA-MM-DD'` | `date`: string ISO com fuso | — |
+| Dado | `events` | `sessions` | `classification` | `grid` |
+|---|---|---|---|---|
+| Ano da temporada | `season.year`: int `2025` | `event.season`: **string** `'2025'` | `season_year`: int `2025`; `team.season.year`: int | `season_year`: int; `event.season`: **string** |
+| Circuito | `circuit`: objeto | `circuit`: string (nome); `event.circuit`: objeto | — | `event.circuit`: objeto |
+| Datas | `date_start`/`date_end`: string `'AAAA-MM-DD'` | `date`: string ISO com fuso | — | — |
+| Equipe | — | — | `team`: objeto | `team_name`: string |
 
 Comparar `2025` com `'2025'` não gera erro no MongoDB: a consulta ou o `$lookup` simplesmente não encontra nada. Filtros por ano devem usar sempre o tipo de cada coleção, ou o valor convertido na camada analítica.
 
@@ -261,8 +346,6 @@ Ainda não implementadas; descritas no plano de ação.
 
 | Coleção | Camada | Conteúdo |
 |---|---|---|
-| `grid` | Bruta | Posição de largada por piloto (`/results/event/{event_id}/category/{category_id}/grid`) |
-| `standings` | Bruta | Classificação do campeonato (`/results/standings`) |
 | `riders` | Bruta (dimensão) | Perfil do piloto: nascimento, início de carreira, país e `career` (equipe e número por temporada) (Broadcast API, `/riders/{id}`) |
 | `teams` | Bruta (dimensão) | Equipes e elencos por temporada e categoria (Broadcast API, `/teams?categoryUuid=&seasonYear=`) |
 | `results` | Analítica | Uma linha por piloto × sessão, com campos achatados e tipados (tempos em segundos, datas como `Date`) |
@@ -297,3 +380,4 @@ A confirmar ao coletar outras temporadas e categorias:
 - **Pontos em temporadas antigas:** o standings traz `points` em 2004 e 2024 (Rossi, 2004: 304, que confere com o resultado oficial). Falta conferir se a classificação das **sessões** também traz `points` antes de 2025.
 - **Sessões em temporadas antigas e em Moto2/Moto3:** conferir os valores reais de `type` e `number`.
 - **Outros valores de `status`:** até agora só apareceram `INSTND` e `OUTSTND`.
+- **Grid:** conferir se a `qualifying_position` já inclui punições de grid e identificar os 10 casos de 2025 que estão no grid mas não na `RAC`.

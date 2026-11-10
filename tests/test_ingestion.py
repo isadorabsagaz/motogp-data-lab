@@ -70,18 +70,22 @@ def test_resolve_category_id_not_found_raises():
 def fake_api():
     """Substitui todas as chamadas à API usadas pelo collect_season.
 
-    Por padrão não há sessões, então só o upsert de "events" acontece.
+    Por padrão não há sessões, grid nem standings: só o upsert de "events" tem dados.
     Cada teste pode mudar o return_value de qualquer mock.
     """
     with patch(f"{INGESTION}.get_seasons", return_value=FAKE_SEASONS), \
          patch(f"{INGESTION}.get_categories", return_value=FAKE_CATEGORIES), \
          patch(f"{INGESTION}.get_events", return_value=FAKE_EVENTS) as mock_events, \
          patch(f"{INGESTION}.get_sessions", return_value=[]) as mock_sessions, \
-         patch(f"{INGESTION}.get_classification", return_value={"classification": []}) as mock_classification:
+         patch(f"{INGESTION}.get_classification", return_value={"classification": []}) as mock_classification, \
+         patch(f"{INGESTION}.get_grid", return_value=[]) as mock_grid, \
+         patch(f"{INGESTION}.get_standings", return_value={"classification": []}) as mock_standings:
         yield {
             "events": mock_events,
             "sessions": mock_sessions,
             "classification": mock_classification,
+            "grid": mock_grid,
+            "standings": mock_standings,
         }
 
 
@@ -210,3 +214,102 @@ def test_collect_season_force_recollects_existing_sessions(fake_api):
     assert fake_api["classification"].call_count == 2
     fake_api["classification"].assert_any_call(session_id="SES-FP1")
     fake_api["classification"].assert_any_call(session_id="SES-RAC")
+
+
+# ---------- grid ----------
+
+FAKE_GRID = [
+    {"qualifying_position": 1, "rider": {"id": "R1"}},
+    {"qualifying_position": 2, "rider": {"id": "R2"}},
+]
+
+
+def test_collect_season_grid_once_per_event_not_per_session(fake_api):
+    storage = make_storage()
+    fake_api["sessions"].return_value = TWO_SESSIONS
+    fake_api["grid"].return_value = FAKE_GRID
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP")
+
+    # 2 GPs (o teste BCN é ignorado), cada um com 2 sessões: o grid é por evento
+    assert fake_api["grid"].call_count == 2
+    fake_api["grid"].assert_any_call(event_id="E-THA", category_id="C-GP")
+    fake_api["grid"].assert_any_call(event_id="E-ARG", category_id="C-GP")
+    # Um único upsert por evento, já com a lista completa
+    assert len(upserted(storage, "grid")) == 2
+    assert all(len(docs) == 2 for docs in upserted(storage, "grid"))
+
+
+def test_collect_season_enriches_grid_with_composite_id(fake_api):
+    storage = make_storage()
+    fake_api["grid"].return_value = FAKE_GRID[:1]
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert upserted(storage, "grid") == [[{
+        "qualifying_position": 1,
+        "rider": {"id": "R1"},
+        "event_id": "E-THA",
+        "season_year": 2025,
+        "category_id": "C-GP",
+        "rider_id": "R1",
+        "id": "E-THA:C-GP:R1",
+    }]]
+
+
+def test_collect_season_collects_grid_even_when_sessions_skipped(fake_api):
+    storage = make_storage(already_collected={"SES-FP1", "SES-RAC"})
+    fake_api["sessions"].return_value = TWO_SESSIONS
+    fake_api["grid"].return_value = FAKE_GRID
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    fake_api["classification"].assert_not_called()
+    fake_api["grid"].assert_called_once_with(event_id="E-THA", category_id="C-GP")
+
+
+# ---------- standings ----------
+
+FAKE_STANDINGS = {
+    "file": "worldstanding.pdf",
+    "classification": [
+        {"id": "ST1", "position": 1, "points": 545, "rider": {"id": "R1"}},
+        {"id": "ST2", "position": 2, "points": 467, "rider": {"id": "R2"}},
+    ],
+}
+
+
+def test_collect_season_standings_once_per_run(fake_api):
+    storage = make_storage()
+    fake_api["grid"].return_value = FAKE_GRID
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP")
+
+    # 2 eventos, mas o standings é da temporada: uma requisição só
+    fake_api["standings"].assert_called_once_with(season_id="S2025", category_id="C-GP")
+    assert len(upserted(storage, "standings")) == 1
+
+
+def test_collect_season_enriches_standings(fake_api):
+    storage = make_storage()
+    fake_api["grid"].return_value = [{"qualifying_position": 1, "rider": {"id": "R-GRID"}}]
+    fake_api["standings"].return_value = FAKE_STANDINGS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    # rider_id vem do próprio item do standings (não de uma variável do grid)
+    assert upserted(storage, "standings") == [[
+        {"id": "ST1", "position": 1, "points": 545, "rider": {"id": "R1"},
+         "season_year": 2025, "category_id": "C-GP", "rider_id": "R1"},
+        {"id": "ST2", "position": 2, "points": 467, "rider": {"id": "R2"},
+         "season_year": 2025, "category_id": "C-GP", "rider_id": "R2"},
+    ]]
+
+
+def test_collect_season_standings_without_grid_does_not_crash(fake_api):
+    storage = make_storage()
+    fake_api["standings"].return_value = FAKE_STANDINGS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert len(upserted(storage, "standings")[0]) == 2

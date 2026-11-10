@@ -1,9 +1,10 @@
 #ingestion.py: coordenação da coleta e sequência das chamadas.
-#EVENT -> SESSION -> CLASSIFICATION
+#EVENT -> SESSION -> CLASSIFICATION -> GRID -> STANDINGS
 
 import logging
 
-from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification, get_seasons, get_categories
+from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification, get_seasons, get_categories, \
+    get_grid, get_standings
 from src.motogp_data_lab.storage import MongoStorage
 
 logger = logging.getLogger(__name__)
@@ -109,5 +110,66 @@ def collect_season(storage: MongoStorage, season_year: int, category_name: str, 
                 )
             else:
                 logger.warning("Session %s (%s) without classification", session.get("type"), session_id)
+
+        #5. collect grid results per event
+        grid = get_grid(event_id=event_id, category_id=category_id)
+
+        grid_list = []
+        for item in grid:
+            rider = item.get("rider", {})
+            rider_id = rider.get("id")
+
+            document = {
+                **item,
+                "event_id": event_id,
+                "season_year": season_year,
+                "category_id": category_id,
+                "rider_id": rider_id,
+                "id": f"{event_id}:{category_id}:{rider_id}"
+            }
+
+            grid_list.append(document)
+
+        write_result = storage.upsert_many(
+            "grid", grid_list, "results/event/{event_id}/category/{category_id}/grid"
+        )
+
+        if write_result is not None:
+            logger.info(
+                "Grid %s: %s results (upserted=%s, matched=%s, modified=%s)",
+                event.get("short_name", event_id), len(grid_list),
+                write_result.upserted_count, write_result.matched_count, write_result.modified_count,
+            )
+        else:
+            logger.warning("Grid %s (%s) without results", event.get("short_name"), event_id)
+
+    #6. standings results
+    result = get_standings(season_id=season_id, category_id=category_id)
+    standings = result.get("classification", [])
+
+    standing_list = []
+    for item in standings:
+        rider = item.get("rider", {})
+
+        document = {
+            **item,
+            "season_year": season_year,
+            "category_id": category_id,
+            "rider_id": rider.get("id"),
+        }
+        standing_list.append(document)
+
+    write_result = storage.upsert_many(
+        "standings", standing_list, "results/standings"
+    )
+
+    if write_result is not None:
+        logger.info(
+            "Standings %s: %s results (upserted=%s, matched=%s, modified=%s)",
+            season_year, len(standing_list),
+            write_result.upserted_count, write_result.matched_count, write_result.modified_count,
+        )
+    else:
+        logger.warning("Standings %s without results", season_year)
 
     logger.info("Skipped %s sessions (already collected)", count_skips)
