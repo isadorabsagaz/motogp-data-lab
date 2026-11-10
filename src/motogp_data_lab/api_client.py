@@ -117,3 +117,9 @@ def get_teams(category_id: str, season_year: int) -> list[dict]:
         "teams",
         {"categoryUuid": category_id, "seasonYear": season_year},
     )
+
+def get_broadcast_categories(season_year: int) -> list[dict]:
+    return get_json(
+        "categories",
+        {"seasonYear": season_year},
+    )

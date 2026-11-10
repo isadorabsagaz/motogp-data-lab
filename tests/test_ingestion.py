@@ -19,6 +19,12 @@ FAKE_CATEGORIES = [
     {"id": "C-M3", "name": "Moto3™"},
 ]
 
+# Broadcast API: nomes sem "™" e UUIDs diferentes dos da Results API
+FAKE_BROADCAST_CATEGORIES = [
+    {"id": "B-GP", "name": "MotoGP", "legacy_id": 3},
+    {"id": "B-M2", "name": "Moto2", "legacy_id": 2},
+]
+
 FAKE_EVENTS = [
     {"id": "E-THA", "short_name": "THA", "test": False},
     {"id": "E-ARG", "short_name": "ARG", "test": False},
@@ -64,28 +70,51 @@ def test_resolve_category_id_not_found_raises():
             ingestion.resolve_category_id("S2025", "MotoE")
 
 
+# ---------- resolve_broadcast_category ----------
+
+@pytest.mark.parametrize("name", ["MotoGP", "motogp", "MotoGP™"])
+def test_resolve_broadcast_category_found(name):
+    with patch(f"{INGESTION}.get_broadcast_categories", return_value=FAKE_BROADCAST_CATEGORIES) as mock_get:
+        assert ingestion.resolve_broadcast_category(2025, name) == "B-GP"
+
+    # A Broadcast API recebe o ano, não o UUID da temporada
+    mock_get.assert_called_once_with(2025)
+
+
+def test_resolve_broadcast_category_not_found_raises():
+    with patch(f"{INGESTION}.get_broadcast_categories", return_value=FAKE_BROADCAST_CATEGORIES):
+        with pytest.raises(ValueError):
+            ingestion.resolve_broadcast_category(2025, "MotoE")
+
+
 # ---------- collect_season ----------
 
 @pytest.fixture
 def fake_api():
     """Substitui todas as chamadas à API usadas pelo collect_season.
 
-    Por padrão não há sessões, grid nem standings: só o upsert de "events" tem dados.
+    Por padrão não há sessões, grid, standings nem teams: só o upsert de "events" tem dados.
+    O get_rider devolve um perfil mínimo com o próprio UUID como id.
     Cada teste pode mudar o return_value de qualquer mock.
     """
     with patch(f"{INGESTION}.get_seasons", return_value=FAKE_SEASONS), \
          patch(f"{INGESTION}.get_categories", return_value=FAKE_CATEGORIES), \
+         patch(f"{INGESTION}.get_broadcast_categories", return_value=FAKE_BROADCAST_CATEGORIES), \
          patch(f"{INGESTION}.get_events", return_value=FAKE_EVENTS) as mock_events, \
          patch(f"{INGESTION}.get_sessions", return_value=[]) as mock_sessions, \
          patch(f"{INGESTION}.get_classification", return_value={"classification": []}) as mock_classification, \
          patch(f"{INGESTION}.get_grid", return_value=[]) as mock_grid, \
-         patch(f"{INGESTION}.get_standings", return_value={"classification": []}) as mock_standings:
+         patch(f"{INGESTION}.get_standings", return_value={"classification": []}) as mock_standings, \
+         patch(f"{INGESTION}.get_teams", return_value=[]) as mock_teams, \
+         patch(f"{INGESTION}.get_rider", side_effect=lambda rider_id: {"id": rider_id}) as mock_rider:
         yield {
             "events": mock_events,
             "sessions": mock_sessions,
             "classification": mock_classification,
             "grid": mock_grid,
             "standings": mock_standings,
+            "teams": mock_teams,
+            "rider": mock_rider,
         }
 
 
@@ -98,14 +127,18 @@ def upserted(storage, collection):
     ]
 
 
-def make_storage(already_collected=()):
-    """Storage falso. `already_collected` = ids das sessões que já têm classificação no banco.
+def make_storage(already_collected=(), rider_uuids=()):
+    """Storage falso.
+
+    `already_collected` = ids das sessões que já têm classificação no banco.
+    `rider_uuids` = o que o distinct_rider_uuids devolve (UUIDs, strings).
 
     Sem configurar o has_classification, o MagicMock devolveria outro MagicMock,
     que é truthy: toda sessão pareceria já coletada.
     """
     storage = MagicMock()
     storage.has_classification.side_effect = lambda session_id: session_id in already_collected
+    storage.distinct_rider_uuids.return_value = list(rider_uuids)
     return storage
 
 
@@ -313,3 +346,80 @@ def test_collect_season_standings_without_grid_does_not_crash(fake_api):
     ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
 
     assert len(upserted(storage, "standings")[0]) == 2
+
+
+# ---------- teams ----------
+
+FAKE_TEAMS = [
+    {"id": "T-DUC", "name": "Ducati Lenovo Team", "riders": [{"id": "U1"}]},
+    {"id": "T-APR", "name": "Aprilia Racing", "riders": [{"id": "U2"}]},
+]
+
+
+def test_collect_season_teams_uses_broadcast_category(fake_api):
+    storage = make_storage()
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP")
+
+    # UUID da Broadcast (B-GP), não o da Results (C-GP); uma chamada por execução
+    fake_api["teams"].assert_called_once_with(category_id="B-GP", season_year=2025)
+
+
+def test_collect_season_enriches_teams_with_composite_id(fake_api):
+    storage = make_storage()
+    fake_api["teams"].return_value = FAKE_TEAMS
+    # Standings com dados para garantir que eles não vão parar na coleção teams
+    fake_api["standings"].return_value = FAKE_STANDINGS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    # O team.id da Broadcast se repete entre temporadas: o ano entra na chave,
+    # e o id original é preservado em team_id (é o que aparece em riders.career[].team.id)
+    assert upserted(storage, "teams") == [[
+        {"id": "2025:C-GP:T-DUC", "team_id": "T-DUC", "name": "Ducati Lenovo Team",
+         "riders": [{"id": "U1"}], "season_year": 2025, "category_id": "C-GP"},
+        {"id": "2025:C-GP:T-APR", "team_id": "T-APR", "name": "Aprilia Racing",
+         "riders": [{"id": "U2"}], "season_year": 2025, "category_id": "C-GP"},
+    ]]
+
+
+# ---------- riders ----------
+
+def test_collect_season_riders_come_from_db(fake_api):
+    storage = make_storage(rider_uuids=["U1", "U2"])
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    storage.distinct_rider_uuids.assert_called_once_with(season_year=2025, category_id="C-GP")
+    assert fake_api["rider"].call_count == 2
+    fake_api["rider"].assert_any_call(rider_id="U1")
+    fake_api["rider"].assert_any_call(rider_id="U2")
+
+
+def test_collect_season_riders_stored_as_returned(fake_api):
+    storage = make_storage(rider_uuids=["U1", "U2"])
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    # Perfil intacto: sem season_year (o histórico por ano está no career[])
+    assert upserted(storage, "riders") == [[{"id": "U1"}, {"id": "U2"}]]
+    endpoints = [c.args[2] for c in storage.upsert_many.call_args_list if c.args[0] == "riders"]
+    assert endpoints == ["riders/{rider_id}"]
+
+
+def test_collect_season_riders_collected_even_when_sessions_skipped(fake_api):
+    storage = make_storage(already_collected={"SES-FP1", "SES-RAC"}, rider_uuids=["U1"])
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    fake_api["classification"].assert_not_called()
+    fake_api["rider"].assert_called_once_with(rider_id="U1")
+
+
+def test_collect_season_no_riders_does_not_call_api(fake_api):
+    storage = make_storage()
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    fake_api["rider"].assert_not_called()

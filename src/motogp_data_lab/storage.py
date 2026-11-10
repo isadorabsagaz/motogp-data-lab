@@ -70,5 +70,8 @@ class MongoStorage:
     def has_classification(self, session_id: str) -> bool:
         return self.db["classification"].count_documents({"session_id": session_id}, limit=1) > 0
 
+    def distinct_rider_uuids(self, season_year: int, category_id: str) -> list:
+        return self.db["classification"].distinct("rider.riders_api_uuid", {"season_year": season_year, "category_id": category_id})
+
     def close(self):
         self.client.close()
