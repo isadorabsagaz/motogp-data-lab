@@ -2,6 +2,7 @@
 #EVENT -> SESSION -> CLASSIFICATION
 
 import logging
+
 from src.motogp_data_lab.api_client import get_events, get_sessions, get_classification, get_seasons, get_categories
 from src.motogp_data_lab.storage import MongoStorage
 
@@ -26,7 +27,7 @@ def resolve_category_id(season_id: str, name: str) -> str:
 
     raise ValueError(f"Category {name} not found / does not exist")
 
-def collect_season(storage: MongoStorage, season_year: int, category_name: str, event_short: str | None = None):
+def collect_season(storage: MongoStorage, season_year: int, category_name: str, event_short: str | None = None, force: bool = False) -> None:
     #1. search for events of the season
     season_id = resolve_season_id(season_year)
     category_id = resolve_category_id(season_id, category_name)
@@ -54,6 +55,8 @@ def collect_season(storage: MongoStorage, season_year: int, category_name: str, 
 
     storage.upsert_many("events", events, "results/events")
 
+    count_skips = 0
+
     #2. search for sessions in each event
     for event in events:
         event_id = event["id"]
@@ -68,6 +71,12 @@ def collect_season(storage: MongoStorage, season_year: int, category_name: str, 
             session_id = session["id"]
 
             #3. search for classification in each session
+            session_with_classification = storage.has_classification(session_id)
+            if session_with_classification and not force:
+                logger.info("Session %s already have classification", session.get("id"))
+                count_skips += 1
+                continue
+
             result = get_classification(session_id=session_id)
 
             classification = result.get("classification", [])
@@ -100,3 +109,5 @@ def collect_season(storage: MongoStorage, season_year: int, category_name: str, 
                 )
             else:
                 logger.warning("Session %s (%s) without classification", session.get("type"), session_id)
+
+    logger.info("Skipped %s sessions (already collected)", count_skips)

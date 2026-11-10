@@ -94,8 +94,19 @@ def upserted(storage, collection):
     ]
 
 
-def test_collect_season_ignores_test_events(fake_api):
+def make_storage(already_collected=()):
+    """Storage falso. `already_collected` = ids das sessões que já têm classificação no banco.
+
+    Sem configurar o has_classification, o MagicMock devolveria outro MagicMock,
+    que é truthy: toda sessão pareceria já coletada.
+    """
     storage = MagicMock()
+    storage.has_classification.side_effect = lambda session_id: session_id in already_collected
+    return storage
+
+
+def test_collect_season_ignores_test_events(fake_api):
+    storage = make_storage()
 
     ingestion.collect_season(storage, season_year=2025, category_name="MotoGP")
 
@@ -108,7 +119,7 @@ def test_collect_season_ignores_test_events(fake_api):
 
 
 def test_collect_season_filters_by_event_short(fake_api):
-    storage = MagicMock()
+    storage = make_storage()
 
     ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
 
@@ -117,7 +128,7 @@ def test_collect_season_filters_by_event_short(fake_api):
 
 
 def test_collect_season_no_events_logs_warning_and_stops(fake_api, caplog):
-    storage = MagicMock()
+    storage = make_storage()
 
     ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="XXX")
 
@@ -127,7 +138,7 @@ def test_collect_season_no_events_logs_warning_and_stops(fake_api, caplog):
 
 
 def test_collect_season_enriches_classification(fake_api):
-    storage = MagicMock()
+    storage = make_storage()
     fake_api["sessions"].return_value = [{"id": "SES-RAC", "type": "RAC"}]
     fake_api["classification"].return_value = {
         "classification": [{"id": "CL1", "position": 1, "rider": {"id": "R1"}}]
@@ -146,3 +157,56 @@ def test_collect_season_enriches_classification(fake_api):
         "category_id": "C-GP",
         "rider_id": "R1",
     }]]
+
+
+# ---------- retomada (--force) ----------
+
+TWO_SESSIONS = [{"id": "SES-FP1", "type": "FP"}, {"id": "SES-RAC", "type": "RAC"}]
+
+
+def test_collect_season_skips_only_sessions_already_collected(fake_api):
+    storage = make_storage(already_collected={"SES-FP1"})
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    storage.has_classification.assert_any_call("SES-FP1")
+    storage.has_classification.assert_any_call("SES-RAC")
+    # Só a sessão que ainda não está no banco vai à API
+    fake_api["classification"].assert_called_once_with(session_id="SES-RAC")
+
+
+def test_collect_season_collects_everything_when_db_is_empty(fake_api):
+    storage = make_storage()
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    assert fake_api["classification"].call_count == 2
+
+
+def test_collect_season_skips_when_all_collected(fake_api, caplog):
+    storage = make_storage(already_collected={"SES-FP1", "SES-RAC"})
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    with caplog.at_level("INFO"):
+        ingestion.collect_season(storage, season_year=2025, category_name="MotoGP", event_short="THA")
+
+    fake_api["classification"].assert_not_called()
+    assert upserted(storage, "classification") == []
+    # Eventos e sessões continuam sendo atualizados
+    assert upserted(storage, "sessions") == [TWO_SESSIONS]
+    assert "Skipped 2 sessions" in caplog.text
+
+
+def test_collect_season_force_recollects_existing_sessions(fake_api):
+    storage = make_storage(already_collected={"SES-FP1", "SES-RAC"})
+    fake_api["sessions"].return_value = TWO_SESSIONS
+
+    ingestion.collect_season(
+        storage, season_year=2025, category_name="MotoGP", event_short="THA", force=True
+    )
+
+    assert fake_api["classification"].call_count == 2
+    fake_api["classification"].assert_any_call(session_id="SES-FP1")
+    fake_api["classification"].assert_any_call(session_id="SES-RAC")

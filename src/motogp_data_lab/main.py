@@ -11,6 +11,7 @@ def parse_args():
     parser.add_argument("--season", type=int, default=2025, help="Season year")
     parser.add_argument("--category", type=str, default="MotoGP", help="category's name without the ™")
     parser.add_argument("--event", type=str, default=None, help="event's short_name - ex. THA")
+    parser.add_argument("--force", action="store_true", help="Force overwrite of existing data")
     return parser.parse_args()
 
 def main():
@@ -20,7 +21,7 @@ def main():
         level=config.LOG_LEVEL.upper(),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
-    logger.info("[ARGS] Collecting season=%s category=%s event=%s", args.season, args.category, args.event)
+    logger.info("[ARGS] Collecting season=%s category=%s event=%s force=%s", args.season, args.category, args.event, args.force)
 
     storage = MongoStorage(config.MONGO_URI, config.MONGO_DB)
 
@@ -31,7 +32,7 @@ def main():
         storage.ensure_indexes()
         logger.info("MongoDB indexes created")
 
-        collect_season(storage=storage, season_year=args.season, category_name=args.category, event_short=args.event)
+        collect_season(storage=storage, season_year=args.season, category_name=args.category, event_short=args.event, force=args.force)
         logger.info("Season Collection completed")
 
     except Exception:
