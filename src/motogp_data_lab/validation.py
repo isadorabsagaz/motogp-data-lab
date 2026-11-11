@@ -25,3 +25,36 @@ def check_unique_session_rider(db) -> dict:
         "failures": len(duplicates),
         "examples": duplicates[:5],
     }
+
+
+def _find_orphans(db, child, local_field, parent) -> dict:
+    total = db[child].count_documents({})
+    orphans = list(db[child].aggregate([
+        { "$lookup": { "from": parent, "localField": local_field, "foreignField": "_id", "as": "parent_docs" } },
+        { "$match": { "parent_docs": { "$size": 0 } } },
+        { "$project": { local_field: 1 } },
+    ]))
+
+    return {
+        "total": total,
+        "failures": len(orphans),
+        "examples": orphans[:5],
+    }
+
+
+def check_classification_session_ref(db) -> dict:
+    result = _find_orphans(db, "classification", "session_id", "sessions")
+    return {
+        "rule": "classification_session_ref",
+        "dimension": "referential_integrity",
+        **result,
+    }
+
+
+def check_session_event_ref(db) -> dict:
+    result = _find_orphans(db, "sessions", "event.id", "events")
+    return {
+        "rule": "session_event_ref",
+        "dimension": "referential_integrity",
+        **result,
+    }
