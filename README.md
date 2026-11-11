@@ -199,6 +199,7 @@ python -m src.motogp_data_lab.main
 ```
 
 Para executar os testes unitários da API:
+
 ```bash
 pytest -v
 ```
@@ -207,6 +208,12 @@ Para consultar os logs do MongoDB:
 
 ```bash
 docker compose logs mongodb
+```
+
+Para acessar o mongosh do MongoDB:
+
+```bash
+docker compose exec mongodb sh -c 'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin motogp'
 ```
 
 ### Dependências Python
