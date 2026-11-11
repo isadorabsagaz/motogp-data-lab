@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.motogp.pulselive.com/motogp/v1"
 MIN_REQUEST_INTERVAL = 0.2
 _last_request_time = 0.0
+_stats = {"requests": 0, "failed_requests": 0}
 
 def _throttle():
     global _last_request_time
@@ -40,6 +41,7 @@ def get_json(path: str, params: dict | None = None):
     url = f"{BASE_URL}/{path.lstrip('/')}"
 
     try:
+        _stats["requests"] += 1
         _throttle()
         start = time.perf_counter()
         response = _http_session.get(
@@ -56,7 +58,15 @@ def get_json(path: str, params: dict | None = None):
 
     except requests.exceptions.RequestException as e:
         logger.error("GET %s failed: %s", url, e)
+        _stats["failed_requests"] += 1
         raise
+
+def reset_stats():
+    _stats["requests"] = 0
+    _stats["failed_requests"] = 0
+
+def get_stats() -> dict:
+    return _stats.copy()
 
 def get_seasons() -> list[dict]:
     return get_json(
@@ -116,4 +126,10 @@ def get_teams(category_id: str, season_year: int) -> list[dict]:
     return get_json(
         "teams",
         {"categoryUuid": category_id, "seasonYear": season_year},
+    )
+
+def get_broadcast_categories(season_year: int) -> list[dict]:
+    return get_json(
+        "categories",
+        {"seasonYear": season_year},
     )

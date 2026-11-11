@@ -1,6 +1,7 @@
 #storage.py: operações com o MongoDB.
 from datetime import datetime, timezone
 
+from bson import ObjectId
 from pymongo import MongoClient, UpdateOne
 
 class MongoStorage:
@@ -17,6 +18,29 @@ class MongoStorage:
 
     def ping(self):
         self.client.admin.command('ping')
+
+    def start_run(self, args: dict) -> tuple[ObjectId, datetime]:
+        document = {
+            "status": "running",
+            "args": args,
+            "started_at": datetime.now(timezone.utc),
+        }
+        run = self.db["ingestion_runs"].insert_one(document)
+        return run.inserted_id, document["started_at"]
+
+    def finish_run(self, run_id: ObjectId, status: str, started_at: datetime, stats: dict, error: str | None = None):
+        finished_at = datetime.now(timezone.utc)
+        duration_s = (finished_at - started_at).total_seconds()
+        self.db["ingestion_runs"].update_one(
+            {"_id": run_id},
+            {"$set": {
+                "status": status,
+                "finished_at": finished_at,
+                "duration_s": duration_s,
+                "stats": stats,
+                "error": error,
+            }}
+        )
 
     def ensure_indexes(self):
         # create_index é idempotente: se o índice já existe igual, não faz nada.
@@ -66,6 +90,12 @@ class MongoStorage:
             )
 
         return self.db[collection_name].bulk_write(operations, ordered=False)
+
+    def has_classification(self, session_id: str) -> bool:
+        return self.db["classification"].count_documents({"session_id": session_id}, limit=1) > 0
+
+    def distinct_rider_uuids(self, season_year: int, category_id: str) -> list:
+        return self.db["classification"].distinct("rider.riders_api_uuid", {"season_year": season_year, "category_id": category_id})
 
     def close(self):
         self.client.close()
