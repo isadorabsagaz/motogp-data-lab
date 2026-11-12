@@ -1,4 +1,5 @@
 #validation.py: verificação da estrutura e dos tipos dos dados.
+RACE_TYPES = ["RAC", "SPR"]
 
 def check_unique_session_rider(db) -> dict:
     group_stage = { "$group": {
@@ -42,6 +43,35 @@ def _find_orphans(db, child, local_field, parent) -> dict:
     }
 
 
+def _find_missing(db, field, session_filter=None) -> dict:
+    base = [
+        { "$lookup": { "from": "sessions", "localField": "session_id", "foreignField": "_id", "as": "s" } },
+        { "$unwind": "$s" },
+    ]
+    if session_filter is not None:
+        base.append({ "$match": { "s.type": session_filter } })
+
+    total_list = list(db["classification"].aggregate(base + [
+        { "$count": "n"}
+    ]))
+
+    total = total_list[0]["n"] if total_list else 0
+
+    missing_list = list(db["classification"].aggregate(base + [
+        { "$match": { field: {"$in": [None, ""]} } },
+        { "$project": { field: 1, "status": 1, "rider.full_name": 1, "s.type": 1} },
+    ]))
+
+    missing_pct = round(len(missing_list) / total * 100, 2) if total else 0
+
+    return {
+        "total": total,
+        "failures": len(missing_list),
+        "missing_pct": missing_pct,
+        "examples": missing_list[:5],
+    }
+
+
 def check_classification_session_ref(db) -> dict:
     result = _find_orphans(db, "classification", "session_id", "sessions")
     return {
@@ -56,5 +86,32 @@ def check_session_event_ref(db) -> dict:
     return {
         "rule": "session_event_ref",
         "dimension": "referential_integrity",
+        **result,
+    }
+
+
+def check_best_lap_completeness(db) -> dict:
+    result = _find_missing(db, "best_lap.time", {"$nin": RACE_TYPES})
+    return {
+        "rule": "best_lap_completeness",
+        "dimension": "completeness",
+        **result,
+    }
+
+
+def check_position_completeness(db) -> dict:
+    result = _find_missing(db, "position")
+    return {
+        "rule": "position_completeness",
+        "dimension": "completeness",
+        **result,
+    }
+
+
+def check_gap_completeness(db) -> dict:
+    result = _find_missing(db, "gap.first")
+    return {
+        "rule": "gap_completeness",
+        "dimension": "completeness",
         **result,
     }
