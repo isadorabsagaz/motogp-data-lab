@@ -1,33 +1,6 @@
 #validation.py: verificação da estrutura e dos tipos dos dados.
 RACE_TYPES = ["RAC", "SPR"]
 
-def check_unique_session_rider(db) -> dict:
-    group_stage = { "$group": {
-        "_id": { "session_id": "$session_id", "rider_id": "$rider_id" },
-        "count": { "$sum": 1 },
-    }}
-
-    duplicates = list(db["classification"].aggregate([
-        group_stage,
-        {"$match": {"count": {"$gt": 1}}}
-    ]))
-
-    total_result = list(db["classification"].aggregate([
-        group_stage,
-        { "$count": "count_groups" }
-    ]))
-
-    total = total_result[0]["count_groups"] if total_result else 0
-
-    return {
-        "rule": "classification_unique_session_rider",
-        "dimension": "uniqueness",
-        "total": total,
-        "failures": len(duplicates),
-        "examples": duplicates[:5],
-    }
-
-
 def _find_orphans(db, child, local_field, parent) -> dict:
     total = db[child].count_documents({})
     orphans = list(db[child].aggregate([
@@ -69,6 +42,33 @@ def _find_missing(db, field, session_filter=None) -> dict:
         "failures": len(missing_list),
         "missing_pct": missing_pct,
         "examples": missing_list[:5],
+    }
+
+
+def check_unique_session_rider(db) -> dict:
+    group_stage = { "$group": {
+        "_id": { "session_id": "$session_id", "rider_id": "$rider_id" },
+        "count": { "$sum": 1 },
+    }}
+
+    duplicates = list(db["classification"].aggregate([
+        group_stage,
+        {"$match": {"count": {"$gt": 1}}}
+    ]))
+
+    total_result = list(db["classification"].aggregate([
+        group_stage,
+        { "$count": "count_groups" }
+    ]))
+
+    total = total_result[0]["count_groups"] if total_result else 0
+
+    return {
+        "rule": "classification_unique_session_rider",
+        "dimension": "uniqueness",
+        "total": total,
+        "failures": len(duplicates),
+        "examples": duplicates[:5],
     }
 
 
@@ -114,4 +114,43 @@ def check_gap_completeness(db) -> dict:
         "rule": "gap_completeness",
         "dimension": "completeness",
         **result,
+    }
+
+
+def check_position_sequence(db) -> dict:
+    base = [
+        { "$match": { "position": { "$ne": None } } },
+        { "$group": {
+            "_id": "$session_id",
+            "n": { "$sum": 1 },
+            "min": { "$min": "$position" },
+            "max": { "$max": "$position" },
+            "distinct": { "$addToSet": "$position" }
+            }
+        },
+    ]
+
+    failure_filter = [
+        {"$project": {"n": 1, "min": 1, "max": 1, "n_distinct": {"$size": "$distinct"} }},
+        {"$match": {"$expr": {"$or": [
+            { "$ne": ["$min", 1]},
+            { "$ne": ["$max", "$n"]},
+            { "$ne": ["$n_distinct", "$n"]},
+        ]}}}
+    ]
+
+    failures = list(db["classification"].aggregate(base + failure_filter))
+
+    total_result = list(db["classification"].aggregate(base + [
+        {"$count": "count_groups"}
+    ]))
+
+    total = total_result[0]["count_groups"] if total_result else 0
+
+    return {
+        "rule": "position_sequence",
+        "dimension": "validity",
+        "total": total,
+        "failures": len(failures),
+        "examples": failures[:5],
     }
