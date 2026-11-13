@@ -1,5 +1,10 @@
 #validation.py: verificação da estrutura e dos tipos dos dados.
+import re
+
 RACE_TYPES = ["RAC", "SPR"]
+LAP_TIME_PATTERN = r"^\d{2}:\d{2}\.\d{3}$"
+GAP_PATTERN = r"^\d{1,2}\.\d{3}$"
+LAPS_PATTERN = r"^\d+$"
 
 def _find_orphans(db, child, local_field, parent) -> dict:
     total = db[child].count_documents({})
@@ -42,6 +47,24 @@ def _find_missing(db, field, session_filter=None) -> dict:
         "failures": len(missing_list),
         "missing_pct": missing_pct,
         "examples": missing_list[:5],
+    }
+
+
+def _find_unparseable(db, field, pattern) -> dict:
+    filled = { field: { "$nin": [None, ""] } }
+    total = db["classification"].count_documents(filled)
+
+    invalid = { field: { "$nin": [None, ""] , "$not": re.compile(pattern) } }
+    failures = db["classification"].count_documents(invalid)
+
+    examples = list(db["classification"].find(
+        invalid, { field: 1, "session_id": 1, "rider.full_name": 1}
+    ).limit(5))
+
+    return {
+        "total": total,
+        "failures": failures,
+        "examples": examples,
     }
 
 
@@ -154,3 +177,40 @@ def check_position_sequence(db) -> dict:
         "failures": len(failures),
         "examples": failures[:5],
     }
+
+
+def check_best_lap_time_format(db) -> dict:
+    result = _find_unparseable(db, "best_lap.time", LAP_TIME_PATTERN)
+    return {
+        "rule": "best_lap_time_format",
+        "dimension": "validity",
+        **result,
+    }
+
+
+def check_race_time_format(db) -> dict:
+    result = _find_unparseable(db, "time", LAP_TIME_PATTERN)
+    return {
+        "rule": "race_time_format",
+        "dimension": "validity",
+        **result,
+    }
+
+
+def check_gap_first_format(db) -> dict:
+    result = _find_unparseable(db, "gap.first", GAP_PATTERN)
+    return {
+        "rule": "gap_first_format",
+        "dimension": "validity",
+        **result,
+    }
+
+
+def check_gap_lap_format(db) -> dict:
+    result = _find_unparseable(db, "gap.lap", LAPS_PATTERN)
+    return {
+        "rule": "gap_lap_format",
+        "dimension": "validity",
+        **result,
+    }
+
